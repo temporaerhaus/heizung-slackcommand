@@ -7,9 +7,13 @@ class SlackTphHeizung {
     private string $hausverstandToken;
     private CurlHandle $ch;
 
-    private array $supportedCommands = [
-        '/heizung_an', '/heizung_aus'
-    ];
+    private const COMMAND_ON = '/heizung_an';
+    private const COMMAND_OFF = '/heizung_aus';
+    private const COMMAND_STATUS = '/heizung_status';
+    private array $supportedCommandsOnOff = [self::COMMAND_ON, self::COMMAND_OFF];
+    private array $supportedCommandsStatus = [self::COMMAND_STATUS];
+    private array $supportedCommandsAll = [self::COMMAND_ON, self::COMMAND_OFF, self::COMMAND_STATUS];
+
     public static ?SlackTphHeizung $instance;
 
     public static function create(): SlackTphHeizung {
@@ -26,111 +30,162 @@ class SlackTphHeizung {
         $this->ch = curl_init();
     }
 
-    /**
-     * Main function to handle the incoming request
-     * @return void
-     */
     public function handle(): void {
-        $this->log($_REQUEST);
-
         if (isset($_POST['token']) && $_POST['token'] == $this->slackToken
-            && (in_array($_POST['command'], $this->supportedCommands))
+            && (in_array($_POST['command'], $this->supportedCommandsAll))
         ) {
 
-            if ($_POST['channel_name'] !== 'heizung') {
-                $this->responseAndExit('Die Heizung kann nur im Kanal #heizung geschaltet werden.');
-            }
-
             $command = $_POST['command'];
-            $parts = preg_split('/\s+/', trim($_POST['text']), 2);
-            $text = $parts[0] ?? null;
-            $comment = $parts[1] ?? null;
-
-            if (empty($text)) {
-                $this->responseAndExit('Kein Raum angegeben. Mögliche Raumnamen: `salon`, `wohnzimmer`, `atelier`, `loetlabor` (in exakt dieser Schreibweise)');
+            if (in_array($command, $this->supportedCommandsOnOff)) {
+                $this->handleOnOff();
             }
-
-            $entityId = null;
-            if (isset($this->roomMapping[$text])) {
-                $entityId = $this->roomMapping[$text];
-            } else {
-                $this->responseAndExit('Unbekannter Raum, keine Schaltung.');
+            if (in_array($command, $this->supportedCommandsStatus)) {
+                $this->handleStatus();
             }
-
-            if ($command == '/heizung_an') {
-                $urlSegment = 'turn_on';
-            } else if ($command == '/heizung_aus') {
-                $urlSegment = 'turn_off';
-            } else {
-                $this->responseAndExit('Unbekannter Befehl.');
-            }
-
-            $url = 'http://hausverstand.iot.fiber.garden:8123/api/services/switch/'.$urlSegment;
-
-            $data = [
-                'entity_id' => 'switch.'.$entityId
-            ];
-
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, $url);
-            curl_setopt($ch,CURLOPT_POST, true);
-            curl_setopt($ch,CURLOPT_POSTFIELDS, json_encode($data));
-            curl_setopt($ch,CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                "Authorization: Bearer " . $this->hausverstandToken,
-                "Content-Type: application/json"
-            ]);
-
-            $result = curl_exec($ch);
-            if (!curl_errno($ch)) {
-
-                if (!empty($comment)) {
-                    $this->sendLog([
-                        'name' => 'Heizung ' . $text . ' ' . $urlSegment,
-                        'message' => $comment,
-                        'entity_id' => 'switch.'.$entityId
-                    ]);
-                }
-                // when turning on, only send a new comment when one is given. else keep the old one.
-                if ($urlSegment == 'turn_on' && !empty($comment)) {
-                    $this->sendComment($entityId, $comment);
-                }
-                if ($urlSegment == 'turn_off') {
-                    $this->sendComment($entityId, $comment ?? 'via slack, von ' . $_POST['user_name']);
-                }
-
-                $this->log($result);
-
-                $this->responseAndExit(json_encode([
-                    "response_type" => "in_channel",
-                    "text" => "Heizung `".$urlSegment."` in `".$text."` von " . $_POST['user_name'] . " (`switch.".$entityId."`)" . " Kommentar: `" . ($comment ?? '<leer, bisheriger bleibt oder autocomment>') . "`",
-                ]), true);
-
-            } else {
-                $this->responseAndExit('API call to hausverstand failed. Jakob probably updated it and now everything is broken.');
-            }
-
         } else {
             $this->responseAndExit('missing parameters');
         }
     }
 
-    private function sendComment(string $entityId, string $comment) {
-        $this->curl('http://hausverstand.iot.fiber.garden:8123/api/services/input_text/set_value', [
-            'entity_id' => 'input_text.'.$entityId,
+    /**
+     * Main function to handle the incoming request
+     * @return void
+     */
+    public function handleOnOff(): void {
+        $this->log($_REQUEST);
+
+        if ($_POST['channel_name'] !== 'heizung') {
+            $this->responseAndExit('Die Heizung kann nur im Channel #heizung geschaltet werden.');
+        }
+
+        $command = $_POST['command'];
+        $parts = preg_split('/\s+/', trim($_POST['text']), 2);
+        $text = $parts[0] ?? null;
+        $comment = $parts[1] ?? null;
+
+        if (empty($text)) {
+            $this->responseAndExit('Kein Raum angegeben. Mögliche Raumnamen: `salon`, `wohnzimmer`, `atelier`, `loetlabor` (in exakt dieser Schreibweise)');
+        }
+
+        $entityId = null;
+        if (isset($this->roomMapping[$text])) {
+            $entityId = $this->roomMapping[$text];
+        } else {
+            $this->responseAndExit('Unbekannter Raum, keine Schaltung.');
+        }
+
+        if ($command == '/heizung_an') {
+            $urlSegment = 'turn_on';
+        } else if ($command == '/heizung_aus') {
+            $urlSegment = 'turn_off';
+        } else {
+            $this->responseAndExit('Unbekannter Befehl.');
+        }
+
+        $url = 'http://hausverstand.iot.fiber.garden:8123/api/services/switch/'.$urlSegment;
+
+        $data = [
+            'entity_id' => 'switch.'.$entityId
+        ];
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch,CURLOPT_POST, true);
+        curl_setopt($ch,CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch,CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            "Authorization: Bearer " . $this->hausverstandToken,
+            "Content-Type: application/json"
+        ]);
+
+        $result = curl_exec($ch);
+        if (!curl_errno($ch)) {
+
+            if (!empty($comment)) {
+                $this->sendLog([
+                    'name' => 'Heizung ' . $text . ' ' . $urlSegment,
+                    'message' => $comment,
+                    'entity_id' => 'switch.'.$entityId
+                ]);
+            }
+            // when turning on, only send a new comment when one is given. else keep the old one.
+            if ($urlSegment == 'turn_on' && !empty($comment)) {
+                $this->sendComment($text, $comment);
+            }
+            if ($urlSegment == 'turn_off') {
+                $this->sendComment($text, $comment ?? 'via slack, von ' . $_POST['user_name']);
+            }
+
+            $this->log($result);
+
+            $this->responseAndExit(json_encode([
+                "response_type" => "in_channel",
+                "text" => "Heizung `".$urlSegment."` in `".$text."` von " . $_POST['user_name'] . " (`switch.".$entityId."`)" . " Kommentar: `" . ($comment ?? '<leer, bisheriger bleibt oder autocomment>') . "`",
+            ]), true);
+
+        } else {
+            $this->responseAndExit('API call to hausverstand failed. Jakob probably updated it and now everything is broken.');
+        }
+
+    }
+
+    private function sendComment(string $roomName, string $comment) {
+        $this->post('http://hausverstand.iot.fiber.garden:8123/api/services/input_text/set_value', [
+            'entity_id' => 'input_text. ' . $roomName . '_heizkommentar',
             'value' => $comment
         ]);
     }
 
     private function sendLog(array $data) {
-        $this->curl('http://hausverstand.iot.fiber.garden:8123/api/services/logbook/log', $data);
+        $this->post('http://hausverstand.iot.fiber.garden:8123/api/services/logbook/log', $data);
     }
 
-    private function curl(string $url, array $data): string {
+    private function handleStatus(): void {
+        $results = [];
+        if (empty($_POST['text'])) {
+            $roomNames = array_keys($this->roomMapping);
+            foreach($roomNames as $name) {
+                $response = $this->get('http://hausverstand.iot.fiber.garden:8123/api/states/sensor.status_'.$name);
+
+                $responseJSON = json_decode($response, true);
+                if ($responseJSON !== null) {
+                    $results[] = $responseJSON['state'] ?? '<no response for '.$name.'>';
+                } else {
+                    $results[] = 'FAIL';
+                }
+
+                $this->log($results);
+            }
+        } else {
+            $text = trim($_POST['text']);
+            $response = $this->get('http://hausverstand.iot.fiber.garden:8123/api/states/sensor.status_'.$text);
+            $responseJSON = json_decode($response, true);
+            $results[] = $responseJSON['state'] ?? '<no response for '.$text.'>';
+        }
+
+        $this->responseAndExit(json_encode([
+            "response_type" => $_POST['channel_name'] === 'heizung' ? 'in_channel' : 'ephemeral',
+
+            // TODO hier noch schick machen!
+            "text" => print_r($results, true),
+        ]), true);
+    }
+
+    private function get(string $url): string {
+        return $this->curl($url, false);
+    }
+
+    private function post(string $url, array $data): string {
+        return $this->curl($url, true, $data);
+    }
+
+    private function curl(string $url, bool $post, ?array $data = null): string {
         curl_reset($this->ch);
         curl_setopt($this->ch, CURLOPT_URL, $url);
-        curl_setopt($this->ch,CURLOPT_POST, true);
-        curl_setopt($this->ch,CURLOPT_POSTFIELDS, json_encode($data));
+        if ($post) {
+            curl_setopt($this->ch, CURLOPT_POST, true);
+            curl_setopt($this->ch, CURLOPT_POSTFIELDS, json_encode($data));
+        }
         curl_setopt($this->ch,CURLOPT_RETURNTRANSFER, true);
         curl_setopt($this->ch, CURLOPT_HTTPHEADER, [
             "Authorization: Bearer " . $this->hausverstandToken,

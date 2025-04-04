@@ -131,7 +131,7 @@ class SlackTphHeizung {
 
     private function sendComment(string $roomName, string $comment) {
         $this->post('http://hausverstand.iot.fiber.garden:8123/api/services/input_text/set_value', [
-            'entity_id' => 'input_text. ' . $roomName . '_heizkommentar',
+            'entity_id' => 'input_text.' . $roomName . '_heizkommentar',
             'value' => $comment
         ]);
     }
